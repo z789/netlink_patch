@@ -1,4 +1,3 @@
-
 # NETLINK_CONNECTOR 协议的思考
 
    NETLINK_CONNECTOR 是AF_NETLINK 协议族的中的一个内核与应用层通信的协议。 利用NETLINK_CONNECTOR可以方便的实现自定义的应用内核通信通道。但使用过程中会有一些不符合常规的语义问题。
@@ -38,12 +37,12 @@
                         strerror(errno), errno);
         不管内核中是否有CN_TEST_IDX，send操作总是执行成功，而且返回是数据的长度。这明显是错误的。
    
-   ## 语义修改建议
+## 语义修改建议
      1. bind/connect的修改。 如果内核中CN_TEST_IDX不存在时，返回-1, 设置 NODEV。
      2. send的修改。 如果内核中CN_TEST_IDX不存在时，返回-1, 设置 NODEV。这也符合send的语义。
      
   
-   ## 代码根源与修改
+## 代码根源与修改
      1. bind问题
         drivers/connector/connector.c中
         struct netlink_kernel_cfg cfg = {
@@ -84,13 +83,13 @@
                 }
          }
 
-    ## 其他代码修改
+## 其他代码修改
        由于改变了 netlink_kernel_cfg 结构，相应的修改其他地方使用该结构的代码，使其符合新语义。
        
-    ## 测试
+## 测试
        修改后测试bind/connect，如果相应的组不存在，均返回-ENODEV。 当组所在内核模块卸载时，send也会返回-ENODEV。
     
-    ## 其他问题
+## 其他问题
        当组所在内核模块卸载时， read、poll/epoll则不会返回-ENODEV，也需要修改。
        但好像语义也可以接受，也有其他手段检测：相应模块退出时，可以通过发送-EPIPE告知应用，内核将要退出。 影响也不是很大。暂不修改。
 
