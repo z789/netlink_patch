@@ -1,0 +1,681 @@
+diff -Nurp linux-5.15.5.orig/crypto/crypto_user_base.c linux-5.15.5/crypto/crypto_user_base.c
+--- linux-5.15.5.orig/crypto/crypto_user_base.c	2021-11-25 16:49:08.000000000 +0800
++++ linux-5.15.5/crypto/crypto_user_base.c	2022-06-16 11:00:53.328940100 +0800
+@@ -470,11 +470,16 @@ static int crypto_user_rcv_msg(struct sk
+ 	return link->doit(skb, nlh, attrs);
+ }
+ 
+-static void crypto_netlink_rcv(struct sk_buff *skb)
++static int crypto_netlink_rcv(struct sk_buff *skb)
+ {
++	int len = skb->len;
++	int err = -EINVAL;
++
+ 	mutex_lock(&crypto_cfg_mutex);
+-	netlink_rcv_skb(skb, &crypto_user_rcv_msg);
++	err = netlink_rcv_skb(skb, &crypto_user_rcv_msg);
+ 	mutex_unlock(&crypto_cfg_mutex);
++
++	return err < 0 ? err : len;
+ }
+ 
+ static int __net_init crypto_netlink_init(struct net *net)
+diff -Nurp linux-5.15.5.orig/drivers/connector/connector.c linux-5.15.5/drivers/connector/connector.c
+--- linux-5.15.5.orig/drivers/connector/connector.c	2021-11-25 16:49:08.000000000 +0800
++++ linux-5.15.5/drivers/connector/connector.c	2022-06-16 11:00:54.175432460 +0800
+@@ -167,10 +167,10 @@ static int cn_call_callback(struct sk_bu
+  *
+  * It checks skb, netlink header and msg sizes, and calls callback helper.
+  */
+-static void cn_rx_skb(struct sk_buff *skb)
++static int cn_rx_skb(struct sk_buff *skb)
+ {
+ 	struct nlmsghdr *nlh;
+-	int len, err;
++	int len, err = -EINVAL;
+ 
+ 	if (skb->len >= NLMSG_HDRLEN) {
+ 		nlh = nlmsg_hdr(skb);
+@@ -179,12 +179,36 @@ static void cn_rx_skb(struct sk_buff *sk
+ 		if (len < (int)sizeof(struct cn_msg) ||
+ 		    skb->len < nlh->nlmsg_len ||
+ 		    len > CONNECTOR_MAX_MSG_SIZE)
+-			return;
++			goto end;
+ 
++		len = skb->len;
+ 		err = cn_call_callback(skb_get(skb));
+ 		if (err < 0)
+ 			kfree_skb(skb);
++		else
++			err = len;
+ 	}
++
++end:
++	return err;
++}
++
++static int cn_bind(struct net *net, int group)
++{
++       struct cn_callback_entry *i = NULL;
++       struct cn_dev *dev = &cdev;
++       int err = -ENODEV;
++
++       spin_lock_bh(&dev->cbdev->queue_lock);
++       list_for_each_entry(i, &dev->cbdev->queue_list, callback_entry) {
++               if (i->id.id.idx == group) {
++                       err = 0;
++                       break;
++               }
++       }
++       spin_unlock_bh(&dev->cbdev->queue_lock);
++
++       return err;
+ }
+ 
+ /*
+@@ -249,6 +273,7 @@ static int cn_init(void)
+ 	struct netlink_kernel_cfg cfg = {
+ 		.groups	= CN_NETLINK_USERS + 0xf,
+ 		.input	= cn_rx_skb,
++		.bind   = cn_bind,
+ 	};
+ 
+ 	dev->nls = netlink_kernel_create(&init_net, NETLINK_CONNECTOR, &cfg);
+diff -Nurp linux-5.15.5.orig/drivers/infiniband/core/netlink.c linux-5.15.5/drivers/infiniband/core/netlink.c
+--- linux-5.15.5.orig/drivers/infiniband/core/netlink.c	2021-11-25 16:49:08.000000000 +0800
++++ linux-5.15.5/drivers/infiniband/core/netlink.c	2022-06-16 11:00:59.235580461 +0800
+@@ -254,9 +254,14 @@ skip:
+ 	return 0;
+ }
+ 
+-static void rdma_nl_rcv(struct sk_buff *skb)
++static int rdma_nl_rcv(struct sk_buff *skb)
+ {
+-	rdma_nl_rcv_skb(skb, &rdma_nl_rcv_msg);
++	int len = skb->len;
++	int err = -EINVAL;
++
++	err = rdma_nl_rcv_skb(skb, &rdma_nl_rcv_msg);
++
++	return err < 0 ? err : len;
+ }
+ 
+ int rdma_nl_unicast(struct net *net, struct sk_buff *skb, u32 pid)
+diff -Nurp linux-5.15.5.orig/drivers/scsi/scsi_netlink.c linux-5.15.5/drivers/scsi/scsi_netlink.c
+--- linux-5.15.5.orig/drivers/scsi/scsi_netlink.c	2021-11-25 16:49:08.000000000 +0800
++++ linux-5.15.5/drivers/scsi/scsi_netlink.c	2022-06-16 11:01:08.700119960 +0800
+@@ -28,13 +28,15 @@ EXPORT_SYMBOL_GPL(scsi_nl_sock);
+  *
+  *
+  **/
+-static void
++static int
+ scsi_nl_rcv_msg(struct sk_buff *skb)
+ {
+ 	struct nlmsghdr *nlh;
+ 	struct scsi_nl_hdr *hdr;
+ 	u32 rlen;
+-	int err, tport;
++	int err = -EINVAL;
++	int len = skb->len;
++	int tport;
+ 
+ 	while (skb->len >= NLMSG_HDRLEN) {
+ 		err = 0;
+@@ -44,7 +46,8 @@ scsi_nl_rcv_msg(struct sk_buff *skb)
+ 		    (skb->len < nlh->nlmsg_len)) {
+ 			printk(KERN_WARNING "%s: discarding partial skb\n",
+ 				 __func__);
+-			return;
++			len -= skb->len;
++			goto end;
+ 		}
+ 
+ 		rlen = NLMSG_ALIGN(nlh->nlmsg_len);
+@@ -101,6 +104,9 @@ next_msg:
+ 
+ 		skb_pull(skb, rlen);
+ 	}
++
++end:
++	return err < 0 ? err : len;
+ }
+ 
+ /**
+diff -Nurp linux-5.15.5.orig/drivers/scsi/scsi_transport_iscsi.c linux-5.15.5/drivers/scsi/scsi_transport_iscsi.c
+--- linux-5.15.5.orig/drivers/scsi/scsi_transport_iscsi.c	2021-11-25 16:49:08.000000000 +0800
++++ linux-5.15.5/drivers/scsi/scsi_transport_iscsi.c	2022-06-16 11:01:08.711094290 +0800
+@@ -3954,23 +3954,26 @@ iscsi_if_recv_msg(struct sk_buff *skb, s
+  * Get message from skb.  Each message is processed by iscsi_if_recv_msg.
+  * Malformed skbs with wrong lengths or invalid creds are not processed.
+  */
+-static void
++static int
+ iscsi_if_rx(struct sk_buff *skb)
+ {
++	int err = -EINVAL;
++	int len = skb->len;
+ 	u32 portid = NETLINK_CB(skb).portid;
+ 
+ 	mutex_lock(&rx_queue_mutex);
+ 	while (skb->len >= NLMSG_HDRLEN) {
+-		int err;
+ 		uint32_t rlen;
+ 		struct nlmsghdr	*nlh;
+ 		struct iscsi_uevent *ev;
+ 		uint32_t group;
+ 		int retries = ISCSI_SEND_MAX_ALLOWED;
++		err = 0;
+ 
+ 		nlh = nlmsg_hdr(skb);
+ 		if (nlh->nlmsg_len < sizeof(*nlh) + sizeof(*ev) ||
+ 		    skb->len < nlh->nlmsg_len) {
++			len -= skb->len;
+ 			break;
+ 		}
+ 
+@@ -4005,6 +4008,8 @@ iscsi_if_rx(struct sk_buff *skb)
+ 		skb_pull(skb, rlen);
+ 	}
+ 	mutex_unlock(&rx_queue_mutex);
++
++	return err < 0 ? err : len;
+ }
+ 
+ #define ISCSI_CLASS_ATTR(_prefix,_name,_mode,_show,_store)		\
+diff -Nurp linux-5.15.5.orig/drivers/staging/gdm724x/netlink_k.c linux-5.15.5/drivers/staging/gdm724x/netlink_k.c
+--- linux-5.15.5.orig/drivers/staging/gdm724x/netlink_k.c	2021-11-25 16:49:08.000000000 +0800
++++ linux-5.15.5/drivers/staging/gdm724x/netlink_k.c	2022-06-16 11:01:08.832809584 +0800
+@@ -65,11 +65,14 @@ static void netlink_rcv_cb(struct sk_buf
+ 	}
+ }
+ 
+-static void netlink_rcv(struct sk_buff *skb)
++static int netlink_rcv(struct sk_buff *skb)
+ {
++	int len = skb->len;
++
+ 	mutex_lock(&netlink_mutex);
+ 	netlink_rcv_cb(skb);
+ 	mutex_unlock(&netlink_mutex);
++	return len;
+ }
+ 
+ struct sock *netlink_init(int unit,
+diff -Nurp linux-5.15.5.orig/include/linux/netlink.h linux-5.15.5/include/linux/netlink.h
+--- linux-5.15.5.orig/include/linux/netlink.h	2021-11-25 16:49:08.000000000 +0800
++++ linux-5.15.5/include/linux/netlink.h	2022-06-16 11:01:38.566360242 +0800
+@@ -46,7 +46,7 @@ void netlink_table_ungrab(void);
+ struct netlink_kernel_cfg {
+ 	unsigned int	groups;
+ 	unsigned int	flags;
+-	void		(*input)(struct sk_buff *skb);
++	int		(*input)(struct sk_buff *skb);
+ 	struct mutex	*cb_mutex;
+ 	int		(*bind)(struct net *net, int group);
+ 	void		(*unbind)(struct net *net, int group);
+diff -Nurp linux-5.15.5.orig/kernel/audit.c linux-5.15.5/kernel/audit.c
+--- linux-5.15.5.orig/kernel/audit.c	2021-11-25 16:49:08.000000000 +0800
++++ linux-5.15.5/kernel/audit.c	2022-06-16 11:01:39.290463985 +0800
+@@ -1519,18 +1519,19 @@ static int audit_receive_msg(struct sk_b
+  * Parse the provided skb and deal with any messages that may be present,
+  * malformed skbs are discarded.
+  */
+-static void audit_receive(struct sk_buff  *skb)
++static int audit_receive(struct sk_buff  *skb)
+ {
+ 	struct nlmsghdr *nlh;
+ 	/*
+ 	 * len MUST be signed for nlmsg_next to be able to dec it below 0
+ 	 * if the nlmsg_len was not aligned
+ 	 */
+-	int len;
+-	int err;
++	int len, rlen;
++	int err = 0;
+ 
+ 	nlh = nlmsg_hdr(skb);
+ 	len = skb->len;
++	rlen = len;
+ 
+ 	audit_ctl_lock();
+ 	while (nlmsg_ok(nlh, len)) {
+@@ -1542,6 +1543,8 @@ static void audit_receive(struct sk_buff
+ 		nlh = nlmsg_next(nlh, &len);
+ 	}
+ 	audit_ctl_unlock();
++
++	return (rlen-len); 
+ }
+ 
+ /* Log information about who is connecting to the audit multicast socket */
+diff -Nurp linux-5.15.5.orig/lib/kobject_uevent.c linux-5.15.5/lib/kobject_uevent.c
+--- linux-5.15.5.orig/lib/kobject_uevent.c	2021-11-25 16:49:08.000000000 +0800
++++ linux-5.15.5/lib/kobject_uevent.c	2022-06-16 11:01:39.602914998 +0800
+@@ -749,9 +749,12 @@ static int uevent_net_rcv_skb(struct sk_
+ 	return ret;
+ }
+ 
+-static void uevent_net_rcv(struct sk_buff *skb)
++static int uevent_net_rcv(struct sk_buff *skb)
+ {
++	int len = skb->len;
++
+ 	netlink_rcv_skb(skb, &uevent_net_rcv_skb);
++	return len;
+ }
+ 
+ static int uevent_net_init(struct net *net)
+diff -Nurp linux-5.15.5.orig/net/core/rtnetlink.c linux-5.15.5/net/core/rtnetlink.c
+--- linux-5.15.5.orig/net/core/rtnetlink.c	2021-11-25 16:49:08.000000000 +0800
++++ linux-5.15.5/net/core/rtnetlink.c	2022-06-16 11:01:40.096616359 +0800
+@@ -5585,9 +5585,12 @@ err_unlock:
+ 	return -EOPNOTSUPP;
+ }
+ 
+-static void rtnetlink_rcv(struct sk_buff *skb)
++static int rtnetlink_rcv(struct sk_buff *skb)
+ {
++	int len = skb->len;
++
+ 	netlink_rcv_skb(skb, &rtnetlink_rcv_msg);
++	return len;
+ }
+ 
+ static int rtnetlink_bind(struct net *net, int group)
+diff -Nurp linux-5.15.5.orig/net/core/sock_diag.c linux-5.15.5/net/core/sock_diag.c
+--- linux-5.15.5.orig/net/core/sock_diag.c	2021-11-25 16:49:08.000000000 +0800
++++ linux-5.15.5/net/core/sock_diag.c	2022-06-16 11:01:40.066576538 +0800
+@@ -270,11 +270,15 @@ static int sock_diag_rcv_msg(struct sk_b
+ 
+ static DEFINE_MUTEX(sock_diag_mutex);
+ 
+-static void sock_diag_rcv(struct sk_buff *skb)
++static int sock_diag_rcv(struct sk_buff *skb)
+ {
++	int len = skb->len;
++
+ 	mutex_lock(&sock_diag_mutex);
+ 	netlink_rcv_skb(skb, &sock_diag_rcv_msg);
+ 	mutex_unlock(&sock_diag_mutex);
++
++	return len;
+ }
+ 
+ static int sock_diag_bind(struct net *net, int group)
+diff -Nurp linux-5.15.5.orig/net/decnet/netfilter/dn_rtmsg.c linux-5.15.5/net/decnet/netfilter/dn_rtmsg.c
+--- linux-5.15.5.orig/net/decnet/netfilter/dn_rtmsg.c	2021-11-25 16:49:08.000000000 +0800
++++ linux-5.15.5/net/decnet/netfilter/dn_rtmsg.c	2022-06-16 11:01:40.153692019 +0800
+@@ -96,14 +96,17 @@ static unsigned int dnrmg_hook(void *pri
+ 
+ #define RCV_SKB_FAIL(err) do { netlink_ack(skb, nlh, (err), NULL); return; } while (0)
+ 
+-static inline void dnrmg_receive_user_skb(struct sk_buff *skb)
++//static inline void dnrmg_receive_user_skb(struct sk_buff *skb)
++static inline int dnrmg_receive_user_skb(struct sk_buff *skb)
+ {
+ 	struct nlmsghdr *nlh = nlmsg_hdr(skb);
++	int err = -EINVAL;
++	int len = skb->len;
+ 
+ 	if (skb->len < sizeof(*nlh) ||
+ 	    nlh->nlmsg_len < sizeof(*nlh) ||
+ 	    skb->len < nlh->nlmsg_len)
+-		return;
++		goto end;
+ 
+ 	if (!netlink_capable(skb, CAP_NET_ADMIN))
+ 		RCV_SKB_FAIL(-EPERM);
+@@ -111,6 +114,9 @@ static inline void dnrmg_receive_user_sk
+ 	/* Eventually we might send routing messages too */
+ 
+ 	RCV_SKB_FAIL(-EINVAL);
++	err = 0;
++end:
++	return err ? err : len;
+ }
+ 
+ static const struct nf_hook_ops dnrmg_ops = {
+diff -Nurp linux-5.15.5.orig/net/ipv4/fib_frontend.c linux-5.15.5/net/ipv4/fib_frontend.c
+--- linux-5.15.5.orig/net/ipv4/fib_frontend.c	2021-11-25 16:49:08.000000000 +0800
++++ linux-5.15.5/net/ipv4/fib_frontend.c	2022-06-16 11:01:40.216775642 +0800
+@@ -1351,23 +1351,24 @@ static void nl_fib_lookup(struct net *ne
+ 	rcu_read_unlock();
+ }
+ 
+-static void nl_fib_input(struct sk_buff *skb)
++static int nl_fib_input(struct sk_buff *skb)
+ {
+ 	struct net *net;
+ 	struct fib_result_nl *frn;
+ 	struct nlmsghdr *nlh;
+ 	u32 portid;
++	int len = skb->len;
+ 
+ 	net = sock_net(skb->sk);
+ 	nlh = nlmsg_hdr(skb);
+ 	if (skb->len < nlmsg_total_size(sizeof(*frn)) ||
+ 	    skb->len < nlh->nlmsg_len ||
+ 	    nlmsg_len(nlh) < sizeof(*frn))
+-		return;
++		goto end;
+ 
+ 	skb = netlink_skb_clone(skb, GFP_KERNEL);
+ 	if (!skb)
+-		return;
++		goto end;
+ 	nlh = nlmsg_hdr(skb);
+ 
+ 	frn = (struct fib_result_nl *) nlmsg_data(nlh);
+@@ -1377,6 +1378,9 @@ static void nl_fib_input(struct sk_buff
+ 	NETLINK_CB(skb).portid = 0;        /* from kernel */
+ 	NETLINK_CB(skb).dst_group = 0;  /* unicast */
+ 	nlmsg_unicast(net->ipv4.fibnl, skb, portid);
++
++end:
++	return len;
+ }
+ 
+ static int __net_init nl_fib_lookup_init(struct net *net)
+diff -Nurp linux-5.15.5.orig/net/netfilter/nfnetlink.c linux-5.15.5/net/netfilter/nfnetlink.c
+--- linux-5.15.5.orig/net/netfilter/nfnetlink.c	2021-11-25 16:49:08.000000000 +0800
++++ linux-5.15.5/net/netfilter/nfnetlink.c	2022-06-16 11:01:40.867638426 +0800
+@@ -634,24 +634,27 @@ static void nfnetlink_rcv_skb_batch(stru
+ 	nfnetlink_rcv_batch(skb, nlh, res_id, gen_id);
+ }
+ 
+-static void nfnetlink_rcv(struct sk_buff *skb)
++static int nfnetlink_rcv(struct sk_buff *skb)
+ {
+ 	struct nlmsghdr *nlh = nlmsg_hdr(skb);
++	int len = skb->len;
+ 
+ 	if (skb->len < NLMSG_HDRLEN ||
+ 	    nlh->nlmsg_len < NLMSG_HDRLEN ||
+ 	    skb->len < nlh->nlmsg_len)
+-		return;
++		goto end;
+ 
+ 	if (!netlink_net_capable(skb, CAP_NET_ADMIN)) {
+ 		netlink_ack(skb, nlh, -EPERM, NULL);
+-		return;
++		goto end;
+ 	}
+ 
+ 	if (nlh->nlmsg_type == NFNL_MSG_BATCH_BEGIN)
+ 		nfnetlink_rcv_skb_batch(skb, nlh);
+ 	else
+ 		netlink_rcv_skb(skb, nfnetlink_rcv_msg);
++end:
++	return len;
+ }
+ 
+ #ifdef CONFIG_MODULES
+diff -Nurp linux-5.15.5.orig/net/netlink/af_netlink.c linux-5.15.5/net/netlink/af_netlink.c
+--- linux-5.15.5.orig/net/netlink/af_netlink.c	2021-11-25 16:49:08.000000000 +0800
++++ linux-5.15.5/net/netlink/af_netlink.c	2022-06-16 11:01:41.359253144 +0800
+@@ -1078,8 +1078,10 @@ static int netlink_connect(struct socket
+ {
+ 	int err = 0;
+ 	struct sock *sk = sock->sk;
++	struct net *net = sock_net(sk);
+ 	struct netlink_sock *nlk = nlk_sk(sk);
+ 	struct sockaddr_nl *nladdr = (struct sockaddr_nl *)addr;
++	unsigned long groups = 0;
+ 
+ 	if (alen < sizeof(addr->sa_family))
+ 		return -EINVAL;
+@@ -1106,13 +1108,24 @@ static int netlink_connect(struct socket
+ 	 */
+ 	if (!READ_ONCE(nlk->bound))
+ 		err = netlink_autobind(sock);
++	if (err)
++		goto end;
++
++	groups = nladdr->nl_groups;
++	if (nlk->netlink_bind && groups) {
++		err = nlk->netlink_bind(net, ffs(nladdr->nl_groups));
++		if (err && nlk->netlink_unbind) {
++			nlk->netlink_unbind(net, ffs(nladdr->nl_groups));
++			goto end;
++		}
++	}
+ 
+ 	if (err == 0) {
+ 		sk->sk_state	= NETLINK_CONNECTED;
+ 		nlk->dst_portid = nladdr->nl_pid;
+ 		nlk->dst_group  = ffs(nladdr->nl_groups);
+ 	}
+-
++end:
+ 	return err;
+ }
+ 
+@@ -1308,16 +1321,19 @@ static int netlink_unicast_kernel(struct
+ 				  struct sock *ssk)
+ {
+ 	int ret;
++	int len;
+ 	struct netlink_sock *nlk = nlk_sk(sk);
+ 
+ 	ret = -ECONNREFUSED;
+ 	if (nlk->netlink_rcv != NULL) {
+-		ret = skb->len;
++		len = skb->len;
+ 		netlink_skb_set_owner_r(skb, sk);
+ 		NETLINK_CB(skb).sk = ssk;
+ 		netlink_deliver_tap_kernel(sk, ssk, skb);
+-		nlk->netlink_rcv(skb);
++		ret = nlk->netlink_rcv(skb);
+ 		consume_skb(skb);
++		if (ret >= 0)
++			ret = len;
+ 	} else {
+ 		kfree_skb(skb);
+ 	}
+diff -Nurp linux-5.15.5.orig/net/netlink/af_netlink.h linux-5.15.5/net/netlink/af_netlink.h
+--- linux-5.15.5.orig/net/netlink/af_netlink.h	2021-11-25 16:49:08.000000000 +0800
++++ linux-5.15.5/net/netlink/af_netlink.h	2022-06-16 11:01:41.357250696 +0800
+@@ -39,7 +39,7 @@ struct netlink_sock {
+ 	struct netlink_callback	cb;
+ 	struct mutex		*cb_mutex;
+ 	struct mutex		cb_def_mutex;
+-	void			(*netlink_rcv)(struct sk_buff *skb);
++	int			(*netlink_rcv)(struct sk_buff *skb);
+ 	int			(*netlink_bind)(struct net *net, int group);
+ 	void			(*netlink_unbind)(struct net *net, int group);
+ 	struct module		*module;
+diff -Nurp linux-5.15.5.orig/net/netlink/genetlink.c linux-5.15.5/net/netlink/genetlink.c
+--- linux-5.15.5.orig/net/netlink/genetlink.c	2021-11-25 16:49:08.000000000 +0800
++++ linux-5.15.5/net/netlink/genetlink.c	2022-06-16 11:01:41.351243352 +0800
+@@ -797,11 +797,15 @@ static int genl_rcv_msg(struct sk_buff *
+ 	return err;
+ }
+ 
+-static void genl_rcv(struct sk_buff *skb)
++static int genl_rcv(struct sk_buff *skb)
+ {
++	int len = skb->len;
++
+ 	down_read(&cb_lock);
+ 	netlink_rcv_skb(skb, &genl_rcv_msg);
+ 	up_read(&cb_lock);
++
++	return len;
+ }
+ 
+ /**************************************************************************
+diff -Nurp linux-5.15.5.orig/net/xfrm/xfrm_user.c linux-5.15.5/net/xfrm/xfrm_user.c
+--- linux-5.15.5.orig/net/xfrm/xfrm_user.c	2021-11-25 16:49:08.000000000 +0800
++++ linux-5.15.5/net/xfrm/xfrm_user.c	2022-06-16 11:01:41.908925086 +0800
+@@ -2926,13 +2926,16 @@ err:
+ 	return err;
+ }
+ 
+-static void xfrm_netlink_rcv(struct sk_buff *skb)
++static int xfrm_netlink_rcv(struct sk_buff *skb)
+ {
+ 	struct net *net = sock_net(skb->sk);
++	int len = skb->len;
+ 
+ 	mutex_lock(&net->xfrm.xfrm_cfg_mutex);
+ 	netlink_rcv_skb(skb, &xfrm_user_rcv_msg);
+ 	mutex_unlock(&net->xfrm.xfrm_cfg_mutex);
++
++	return len;
+ }
+ 
+ static inline unsigned int xfrm_expire_msgsize(void)
+diff -Nurp linux-5.15.5.orig/samples/connector/ucon.c linux-5.15.5/samples/connector/ucon.c
+--- linux-5.15.5.orig/samples/connector/ucon.c	2021-11-25 16:49:08.000000000 +0800
++++ linux-5.15.5/samples/connector/ucon.c	2022-06-16 11:01:41.952978940 +0800
+@@ -29,6 +29,7 @@
+ 
+ #define DEBUG
+ #define NETLINK_CONNECTOR 	11
++#define MAX_LEN_BUFFER 4096
+ 
+ /* Hopefully your userspace connector.h matches this kernel */
+ #define CN_TEST_IDX		CN_NETLINK_USERS + 3
+@@ -94,6 +95,81 @@ static void usage(void)
+ 	);
+ }
+ 
++static int open_netlink_bind(void)
++{
++	int s = -1;
++	char buf[MAX_LEN_BUFFER];
++	struct sockaddr_nl l_local;
++
++	memset(buf, 0, sizeof(buf));
++
++	s = socket(PF_NETLINK, SOCK_DGRAM, NETLINK_CONNECTOR);
++	if (s == -1) {
++		perror("socket");
++		goto end;
++	}
++
++	l_local.nl_family = AF_NETLINK;
++	l_local.nl_groups = (1 << (CN_TEST_IDX-1));	/* bitmask of requested groups */
++//	l_local.nl_groups = -1;	/* bitmask of requested groups */
++	l_local.nl_pid = getpid();
++
++	ulog("subscribing to %u.%u\n", CN_TEST_IDX, CN_TEST_VAL);
++
++	if (bind(s, (struct sockaddr *)&l_local, sizeof(struct sockaddr_nl)) ==
++	    -1) {
++		perror("bind");
++		close(s);
++		s = -1;
++		goto end;
++	}
++
++ end:
++	return s;
++}
++
++static int open_netlink_connect(void)
++{
++	int s = -1;
++	char buf[MAX_LEN_BUFFER];
++	struct sockaddr_nl l_local;
++	int opt =CN_TEST_IDX;
++	int ret = -1;
++
++	memset(buf, 0, sizeof(buf));
++
++	s = socket(PF_NETLINK, SOCK_DGRAM, NETLINK_CONNECTOR);
++	if (s == -1) {
++		perror("socket");
++		goto end;
++	}
++
++	l_local.nl_family = AF_NETLINK;
++	l_local.nl_groups = (1 << (CN_TEST_IDX-1));	/* bitmask of requested groups */
++	l_local.nl_pid = 0;             /* */
++
++	ulog("subscribing to %u.%u\n", CN_TEST_IDX, CN_TEST_VAL);
++
++	if (connect(s, (struct sockaddr *)&l_local, sizeof(struct sockaddr_nl))
++	    == -1) {
++		perror("connect");
++		close(s);
++		s = -1;
++		goto end;
++	}
++
++	ret = setsockopt(s, SOL_NETLINK, NETLINK_ADD_MEMBERSHIP, &opt, sizeof(opt));
++	if (ret < 0) {
++		ulog("setockeopt fail\n");
++		close(s);
++		s = -1;
++		goto end;
++	}
++
++ end:
++	return s;
++}
++
+ int main(int argc, char *argv[])
+ {
+ 	int s;
+@@ -106,12 +182,16 @@ int main(int argc, char *argv[])
+ 	time_t tm;
+ 	struct pollfd pfd;
+ 	bool send_msgs = false;
++	int connect_mode = 0;
+ 
+-	while ((s = getopt(argc, argv, "hs")) != -1) {
++	while ((s = getopt(argc, argv, "hsc")) != -1) {
+ 		switch (s) {
+ 		case 's':
+ 			send_msgs = true;
+ 			break;
++		case 'c':
++			connect_mode = 1;
++			break;
+ 
+ 		case 'h':
+ 			usage();
+@@ -136,6 +216,7 @@ int main(int argc, char *argv[])
+ 
+ 	memset(buf, 0, sizeof(buf));
+ 
++#if 0
+ 	s = socket(PF_NETLINK, SOCK_DGRAM, NETLINK_CONNECTOR);
+ 	if (s == -1) {
+ 		perror("socket");
+@@ -160,6 +241,15 @@ int main(int argc, char *argv[])
+ 		setsockopt(s, SOL_NETLINK, NETLINK_ADD_MEMBERSHIP, &on, sizeof(on));
+ 	}
+ #endif
++#endif
++	if (connect_mode)
++		s = open_netlink_connect(); 
++	else
++		s = open_netlink_bind(); 
++	if (s < 0) {
++		perror("open_netlink");
++		return -1;
++	}
+ 	if (send_msgs) {
+ 		int i, j;
+ 
+@@ -176,12 +266,15 @@ int main(int argc, char *argv[])
+ 		for (j=0; j<10; ++j) {
+ 			for (i=0; i<1000; ++i) {
+ 				len = netlink_send(s, data);
++				if (len < 0) 
++					goto send_end;
+ 			}
+ 
+ 			ulog("%d messages have been sent to %08x.%08x.\n", i, data->id.idx, data->id.val);
+ 		}
++send_end:
+ 
+-		return 0;
++		//return 0;
+ 	}
+ 
+ 
