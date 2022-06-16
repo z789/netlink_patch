@@ -28,7 +28,8 @@
                 goto end;
         }
 ```
-        代码中的bind操作，不管内核中是否有CN_TEST_IDX 总是执行成功。 这会造成以下问题： 浪费资源，造成误解，也不符合常理。 
+        代码中的bind操作，不管内核中是否有CN_TEST_IDX 总是执行成功。 这会造成以下问题： 浪费资源，
+        造成误解，也不符合常理。 
         
         bind的问题，也存在connect操作中。
         
@@ -55,6 +56,7 @@
                 .input  = cn_rx_skb,
         };
 ```
+
         在上面的结构中没有实现bind函数。修改如下：
 ```
         struct netlink_kernel_cfg cfg = {
