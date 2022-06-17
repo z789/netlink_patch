@@ -306,13 +306,12 @@ diff -Nurp linux-5.15.5.orig/net/core/sock_diag.c linux-5.15.5/net/core/sock_dia
  static int sock_diag_bind(struct net *net, int group)
 diff -Nurp linux-5.15.5.orig/net/decnet/netfilter/dn_rtmsg.c linux-5.15.5/net/decnet/netfilter/dn_rtmsg.c
 --- linux-5.15.5.orig/net/decnet/netfilter/dn_rtmsg.c	2021-11-25 16:49:08.000000000 +0800
-+++ linux-5.15.5/net/decnet/netfilter/dn_rtmsg.c	2022-06-16 11:01:40.153692019 +0800
-@@ -96,14 +96,17 @@ static unsigned int dnrmg_hook(void *pri
++++ linux-5.15.5/net/decnet/netfilter/dn_rtmsg.c	2022-06-17 12:10:31.442405138 +0800
+@@ -96,14 +96,16 @@ static unsigned int dnrmg_hook(void *pri
  
  #define RCV_SKB_FAIL(err) do { netlink_ack(skb, nlh, (err), NULL); return; } while (0)
  
 -static inline void dnrmg_receive_user_skb(struct sk_buff *skb)
-+//static inline void dnrmg_receive_user_skb(struct sk_buff *skb)
 +static inline int dnrmg_receive_user_skb(struct sk_buff *skb)
  {
  	struct nlmsghdr *nlh = nlmsg_hdr(skb);
@@ -327,7 +326,7 @@ diff -Nurp linux-5.15.5.orig/net/decnet/netfilter/dn_rtmsg.c linux-5.15.5/net/de
  
  	if (!netlink_capable(skb, CAP_NET_ADMIN))
  		RCV_SKB_FAIL(-EPERM);
-@@ -111,6 +114,9 @@ static inline void dnrmg_receive_user_sk
+@@ -111,6 +113,9 @@ static inline void dnrmg_receive_user_sk
  	/* Eventually we might send routing messages too */
  
  	RCV_SKB_FAIL(-EINVAL);
