@@ -529,7 +529,7 @@ diff -Nurp linux-5.15.5.orig/net/xfrm/xfrm_user.c linux-5.15.5/net/xfrm/xfrm_use
  static inline unsigned int xfrm_expire_msgsize(void)
 diff -Nurp linux-5.15.5.orig/samples/connector/ucon.c linux-5.15.5/samples/connector/ucon.c
 --- linux-5.15.5.orig/samples/connector/ucon.c	2021-11-25 16:49:08.000000000 +0800
-+++ linux-5.15.5/samples/connector/ucon.c	2022-06-16 11:01:41.952978940 +0800
++++ linux-5.15.5/samples/connector/ucon.c	2022-06-17 12:05:32.628268456 +0800
 @@ -29,6 +29,7 @@
  
  #define DEBUG
@@ -662,20 +662,32 @@ diff -Nurp linux-5.15.5.orig/samples/connector/ucon.c linux-5.15.5/samples/conne
  	if (send_msgs) {
  		int i, j;
  
-@@ -176,12 +266,15 @@ int main(int argc, char *argv[])
+@@ -176,10 +266,16 @@ int main(int argc, char *argv[])
  		for (j=0; j<10; ++j) {
  			for (i=0; i<1000; ++i) {
  				len = netlink_send(s, data);
 +				if (len < 0) 
 +					goto send_end;
++				
++				ulog("%d messages have been sent to %08x.%08x.\n", i, data->id.idx, data->id.val);
++				sleep(1);
  			}
  
  			ulog("%d messages have been sent to %08x.%08x.\n", i, data->id.idx, data->id.val);
  		}
 +send_end:
  
--		return 0;
-+		//return 0;
+ 		return 0;
  	}
+@@ -222,8 +318,9 @@ int main(int argc, char *argv[])
+ 			data = (struct cn_msg *)NLMSG_DATA(reply);
  
- 
+ 			time(&tm);
+-			fprintf(out, "%.24s : [%x.%x] [%08u.%08u].\n",
+-				ctime(&tm), data->id.idx, data->id.val, data->seq, data->ack);
++			data->data[data->len] = '\0';
++			fprintf(out, "%.24s : [%x.%x] [%08u.%08u]: %s\n",
++				ctime(&tm), data->id.idx, data->id.val, data->seq, data->ack, data->data);
+ 			fflush(out);
+ 			break;
+ 		default:
